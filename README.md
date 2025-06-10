@@ -1,66 +1,35 @@
-## Foundry
+# Kindness Pool System
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+This project implements a decentralized kindness pool system using Hardhat and Solidity smart contracts. Users can contribute to or receive from a daily pool of Ether, promoting a culture of giving and receiving kindness.
 
-Foundry consists of:
+## Business Logic
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+For detailed business logic, please refer to [BUSINESS_LOGIC.md](./docs/BUSINESS_LOGIC.md).
 
-## Documentation
+Key features:
+- 24-hour cycles for contributions and distributions
+- User can contribute between 0.001 and 1 ETH
+- Users can enter a receiver pool to potentially receive funds
+- Automatic distribution at the end of each cycle
 
-https://book.getfoundry.sh/
+## Prerequisites
+
+- Node.js (v14.0.0 or later)
+- npm (v6.0.0 or later)
+
+## Installation
+
+1. Clone the repository:
+   ```
+   git clone https://github.com/your-repo/kindness-pool.git
+   cd kindness-pool
+   ```
+
+2. Install dependencies:
+   ```
+   npm install
+   ```
 
 ## Usage
 
-### Build
-
-```shell
-$ forge build
-```
-
-### Test
-
-```shell
-$ forge test
-```
-
-### Format
-
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+### Compile Contracts
