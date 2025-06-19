@@ -14,9 +14,9 @@
   - Added robust tracking of failed receivers
   - Added retry mechanism with exponential backoff
   - Added emergency withdrawal handling for stuck funds
-- [ ] Add checks for contract balance before distribution
-  - Add balance checks in distributePool
-  - Add minimum balance requirements
+- [x] Add checks for contract balance before distribution
+  - Implemented balance verification in distributePool
+  - Added minimum pool balance constant
 - [ ] Implement redistribution mechanism for failed transfers
   - Improve current retry mechanism
   - Add automatic retry scheduling
