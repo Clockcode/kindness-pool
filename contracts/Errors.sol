@@ -26,3 +26,5 @@ error TooEarlyToRetry();
 error MaxRetriesExceeded();
 error EmergencyWithdrawalFailed();
 error NotAdmin();
+error InsufficientContractBalance();
+error PoolBalanceBelowMinimum();

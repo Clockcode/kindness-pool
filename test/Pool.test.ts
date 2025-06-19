@@ -179,4 +179,36 @@ describe("Pool", function () {
       expect(await pool.unclaimedFunds()).to.equal(0);
     });
   });
+
+  describe("Distribution balance checks", function () {
+    beforeEach(async function () {
+      await pool.connect(owner).grantRole(await pool.DISTRIBUTOR_ROLE(), owner.address);
+      await pool.connect(owner).setDistributionWindow(true);
+      await pool.connect(addr1).enterReceiverPool();
+    });
+
+    it("Should revert if contract balance is less than dailyPool", async function () {
+      const slot = "0x0000000000000000000000000000000000000000000000000000000000000001";
+      await ethers.provider.send("hardhat_setStorageAt", [
+        await pool.getAddress(),
+        slot,
+        ethers.zeroPadValue(ethers.toBeHex(ethers.parseEther("1")), 32),
+      ]);
+
+      await expect(pool.connect(owner).distributePool()).to.be.revertedWithCustomError(
+        pool,
+        "InsufficientContractBalance"
+      );
+    });
+
+    it("Should revert if daily pool is below minimum", async function () {
+      const amount = ethers.parseEther("0.005");
+      await pool.connect(addr2).giveKindness(amount, { value: amount });
+
+      await expect(pool.connect(owner).distributePool()).to.be.revertedWithCustomError(
+        pool,
+        "PoolBalanceBelowMinimum"
+      );
+    });
+  });
 });

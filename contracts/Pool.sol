@@ -61,6 +61,7 @@ contract Pool is AccessControl {
     uint256 public constant MAX_RECEIVERS = 100; // Adjust based on your needs
     uint256 public constant MIN_KINDNESS_AMOUNT = 0.001 ether; // Minimum amount of 0.001 ETH
     uint256 public constant MAX_KINDNESS_AMOUNT = 1 ether;     // Maximum amount of 1 ETH
+    uint256 public constant MIN_POOL_BALANCE = 0.01 ether;     // Minimum pool balance required to distribute
     uint256 public constant MAX_RETRIES = 3;
     uint256 public constant RETRY_COOLDOWN = 1 hours;
 
@@ -152,6 +153,8 @@ contract Pool is AccessControl {
         if (dailyPool == 0) revert EmptyPool();
         if (receivers.length == 0) revert NoReceivers();
         if (receivers.length > MAX_RECEIVERS) revert TooManyReceivers();
+        if (address(this).balance < dailyPool) revert InsufficientContractBalance();
+        if (dailyPool < MIN_POOL_BALANCE) revert PoolBalanceBelowMinimum();
 
         // Store values we need before making any state changes
         uint256 amountPerReceiver = dailyPool / receivers.length;
