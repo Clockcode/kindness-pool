@@ -77,7 +77,7 @@ describe("Pool", function () {
 
     it("Should prevent non-distributor from distributing pool", async function () {
       await expect(pool.connect(addr1).distributePool())
-        .to.be.revertedWithCustomError(pool, "NotDistributor");
+        .to.be.revertedWithCustomError(pool, "AccessControlUnauthorizedAccount");
     });
   });
 

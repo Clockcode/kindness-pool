@@ -21,3 +21,8 @@ error DistributionFailed();
 error NotSystem();
 error EmptyName();
 error NameTooLong();
+error TransferFailedErr();
+error TooEarlyToRetry();
+error MaxRetriesExceeded();
+error EmergencyWithdrawalFailed();
+error NotAdmin();

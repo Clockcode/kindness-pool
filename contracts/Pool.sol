@@ -25,9 +25,19 @@ contract Pool is AccessControl {
     mapping(address => uint256) public transactionCount;
     uint256 public constant MAX_TRANSACTIONS_PER_DAY = 10;
     mapping(address => uint256) public dailyContributions;  // Track daily contributions per user
-    mapping(address => uint256) public failedTransfers;     // Track failed transfers
     uint256 public unclaimedFunds;                         // Track unclaimed funds
     bool public distributionWindowOpen;                    // Track if distribution window is open
+
+    // Track failed transfers
+    struct FailedTransfer {
+        address receiver;
+        uint256 amount;
+        uint256 timestamp;
+        uint256 retryCount;
+    }
+
+    // Mapping to track failed transfers
+    mapping(address => FailedTransfer) public failedTransfers;
 
     // Events
     event KindnessGiven(address indexed giver, uint256 amount);
@@ -38,6 +48,8 @@ contract Pool is AccessControl {
     event TransferRetried(address indexed receiver, uint256 amount, bool success);
     event UnclaimedFundsUpdated(uint256 amount);
     event DistributionWindowUpdated(bool isOpen);
+    event EmergencyWithdrawalRequested(address indexed receiver, uint256 amount);
+    event EmergencyWithdrawalCompleted(address indexed receiver, uint256 amount);
 
     // Constants
     uint256 public constant DISTRIBUTION_INTERVAL = 1 days;
@@ -45,6 +57,8 @@ contract Pool is AccessControl {
     uint256 public constant MAX_RECEIVERS = 100; // Adjust based on your needs
     uint256 public constant MIN_KINDNESS_AMOUNT = 0.001 ether; // Minimum amount of 0.001 ETH
     uint256 public constant MAX_KINDNESS_AMOUNT = 1 ether;     // Maximum amount of 1 ETH
+    uint256 public constant MAX_RETRIES = 3;
+    uint256 public constant RETRY_COOLDOWN = 1 hours;
 
     modifier rateLimited() {
         if (block.timestamp < lastActionTime[msg.sender] + ACTION_COOLDOWN) revert TooManyActions();
@@ -100,11 +114,10 @@ contract Pool is AccessControl {
 
     /**
      * @dev Distributes the pool to all receivers
-     * @notice Can only be called by addresses with DISTRIBUTOR_ROLE
+     * @dev Can only be called by distributor during distribution window
+     * @dev Uses transfer() for EOA addresses
      */
-    function distributePool() external {
-        if (!hasRole(DISTRIBUTOR_ROLE, msg.sender)) revert NotDistributor();
-        if (gasleft() <= 1000000) revert InsufficientGas();
+    function distributePool() external onlyRole(DISTRIBUTOR_ROLE) {
         if (!isWithinDistributionWindow()) revert NotInDistributionWindow();
         if (hasDistributedToday()) revert AlreadyDistributedToday();
         if (dailyPool == 0) revert EmptyPool();
@@ -122,26 +135,34 @@ contract Pool is AccessControl {
 
         // EFFECTS: Update all state variables before any external calls
         dailyPool = 0;
+        // Update state before external calls to prevent reentrancy
         lastDistributionTime = block.timestamp;
         delete receivers;
 
-        // Reset daily contributions and process transfers
-        for(uint i; i < currentReceivers.length;) {
+        // Distribute to each receiver
+        for (uint256 i = 0; i < currentReceivers.length; i++) {
             address receiver = currentReceivers[i];
+            // Reset daily contributions
             dailyContributions[receiver] = 0;
 
             // Update user registry state before external call
             userRegistry.updateReceiverPoolStatus(receiver, false);
             userRegistry.updateUserStats(receiver, false, amountPerReceiver);
 
-            // Make external call last
-            (bool success, ) = receiver.call{value: amountPerReceiver}("");
-            if (!success) {
-                failedTransfers[receiver] = amountPerReceiver;
+            // Make external call
+            try this.transferToReceiver{gas: 21000}(receiver, amountPerReceiver) {
+                emit PoolDistributed(amountPerReceiver, 1);
+            } catch {
+                // Track failed transfer
+                failedTransfers[receiver] = FailedTransfer({
+                    receiver: receiver,  // Store the receiver address
+                    amount: amountPerReceiver,
+                    timestamp: block.timestamp,
+                    retryCount: 0
+                });
                 failedAmount += amountPerReceiver;
                 emit TransferFailed(receiver, amountPerReceiver);
             }
-
             unchecked { i++; }
         }
 
@@ -152,41 +173,6 @@ contract Pool is AccessControl {
         }
 
         emit PoolDistributed(totalAmount - failedAmount, receiverCount);
-    }
-
-    /**
-     * @dev Retries a failed transfer to a specific receiver
-     * @param receiver Address of the receiver to retry transfer for
-     */
-    function retryFailedTransfer(address receiver) external {
-        if (!hasRole(DISTRIBUTOR_ROLE, msg.sender)) revert NotDistributor();
-        uint256 amount = failedTransfers[receiver];
-        if (amount == 0) revert NoFailedTransfer();
-
-        // Update state before external call
-        failedTransfers[receiver] = 0;
-        unchecked { unclaimedFunds -= amount; }
-
-        // Make external call
-        (bool success, ) = receiver.call{value: amount}("");
-        if (success) {
-            emit TransferRetried(receiver, amount, true);
-            emit KindnessReceived(receiver, amount);
-        } else {
-            // If transfer fails again, restore the failed transfer
-            failedTransfers[receiver] = amount;
-            unchecked { unclaimedFunds += amount; }
-            emit TransferRetried(receiver, amount, false);
-        }
-    }
-
-    /**
-     * @dev Returns the amount of failed transfer for a specific receiver
-     * @param receiver Address of the receiver
-     * @return uint256 Amount of failed transfer
-     */
-    function getFailedTransferAmount(address receiver) external view returns (uint256) {
-        return failedTransfers[receiver];
     }
 
     /**
@@ -257,5 +243,114 @@ contract Pool is AccessControl {
 
         distributionWindowOpen = _isOpen;
         emit DistributionWindowUpdated(_isOpen);
+    }
+
+    /**
+     * @notice Internal function to transfer funds to a receiver
+     * @param receiver The address to receive the funds
+     * @param amount The amount to transfer
+     */
+    function transferToReceiver(address receiver, uint256 amount) external {
+        if (msg.sender != address(this)) revert NotSystem();
+
+        if (!payable(receiver).send(amount)) {
+            failedTransfers[receiver] = FailedTransfer({
+                receiver: receiver,
+                amount: amount,
+                timestamp: block.timestamp,
+                retryCount: 0
+            });
+            revert TransferFailedErr();
+        }
+    }
+
+    /**
+     * @notice Retry a failed transfer
+     * @param receiver The address of the failed transfer
+     */
+    function retryFailedTransfer(address receiver) external {
+        if (!hasRole(DISTRIBUTOR_ROLE, msg.sender)) revert NotDistributor();
+        FailedTransfer storage failed = failedTransfers[receiver];
+        if (failed.amount == 0) revert NoFailedTransfer();
+        if (failed.retryCount >= MAX_RETRIES) revert MaxRetriesExceeded();
+        if (block.timestamp < failed.timestamp + RETRY_COOLDOWN) revert TooEarlyToRetry();
+
+        uint256 amount = failed.amount;
+        delete failedTransfers[receiver];
+
+        try this.transferToReceiver{gas: 21000}(receiver, amount) {
+            emit TransferRetried(receiver, amount, true);
+            emit KindnessReceived(receiver, amount);
+        } catch {
+            failedTransfers[receiver] = FailedTransfer({
+                receiver: receiver,  // Store the receiver address
+                amount: amount,
+                timestamp: block.timestamp,
+                retryCount: failed.retryCount + 1
+            });
+            emit TransferRetried(receiver, amount, false);
+        }
+    }
+
+    /**
+     * @notice Get the amount of a failed transfer
+     * @param receiver The address to check
+     * @return The amount of the failed transfer
+     */
+    function getFailedTransferAmount(address receiver) external view returns (uint256) {
+        return failedTransfers[receiver].amount;
+    }
+
+    /**
+     * @notice Request emergency withdrawal for a failed transfer
+     * @param receiver The address of the failed transfer
+     */
+    function requestEmergencyWithdrawal(address receiver) external {
+        FailedTransfer storage failed = failedTransfers[receiver];
+        if (failed.amount == 0) revert NoFailedTransfer();
+
+        emit EmergencyWithdrawalRequested(receiver, failed.amount);
+    }
+
+    /**
+     * @notice Complete emergency withdrawal for a failed transfer
+     * @param receiver The address of the failed transfer
+     */
+    function completeEmergencyWithdrawal(address receiver) external {
+        FailedTransfer storage failed = failedTransfers[receiver];
+        if (failed.amount == 0) revert NoFailedTransfer();
+
+        uint256 amount = failed.amount;
+        delete failedTransfers[receiver];
+
+        try this.transferToReceiver{gas: 21000}(receiver, amount) {
+            emit EmergencyWithdrawalCompleted(receiver, amount);
+        } catch {
+            emit TransferFailed(receiver, amount);
+        }
+    }
+
+    function getFailedTransfers() external view returns (address[] memory) {
+        uint256 count = 0;
+        // First count how many failed transfers we have
+        for (uint256 i = 0; i < receivers.length; i++) {
+            if (failedTransfers[receivers[i]].amount > 0) {
+                count++;
+            }
+        }
+
+        // Create array of the right size
+        address[] memory failedAddresses = new address[](count);
+        uint256 index = 0;
+
+        // Fill the array
+        for (uint256 i = 0; i < receivers.length; i++) {
+            if (failedTransfers[receivers[i]].amount > 0) {
+                failedAddresses[index] = receivers[i];
+                index++;
+            }
+        }
+
+        return failedAddresses;
     }
 }

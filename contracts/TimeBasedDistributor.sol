@@ -12,6 +12,31 @@ import "./Errors.sol";
  * only during the designated distribution window
  */
 contract TimeBasedDistributor is AccessControl {
+    // Rename for clarity
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+
+    // Add failed transfer handling
+    function handleFailedTransfers() external {
+        if (!hasRole(ADMIN_ROLE, msg.sender)) revert NotAdmin();
+
+        // Get all failed transfers
+        address[] memory failedAddresses = pool.getFailedTransfers();
+
+        for (uint256 i = 0; i < failedAddresses.length; i++) {
+            address receiver = failedAddresses[i];
+            uint256 amount = pool.getFailedTransferAmount(receiver);
+
+            // Try to retry the transfer
+            try pool.retryFailedTransfer(receiver) {
+                emit TransferRetried(receiver, amount, true);
+            } catch {
+                // If retry fails, request emergency withdrawal
+                pool.requestEmergencyWithdrawal(receiver);
+                emit EmergencyWithdrawalRequested(receiver, amount);
+            }
+        }
+    }
+
     // Add the DISTRIBUTOR_ROLE constant
     bytes32 public constant DISTRIBUTOR_ROLE = keccak256("DISTRIBUTOR_ROLE");
 
@@ -21,6 +46,9 @@ contract TimeBasedDistributor is AccessControl {
     // Events for tracking important actions
     event DistributionAttempted(uint256 timestamp, bool success);
     event PoolAddressUpdated(address oldPool, address newPool);
+    event FailedTransfersAttempted(address[] failedTransfers);
+    event TransferRetried(address receiver, uint256 amount, bool success);
+    event EmergencyWithdrawalRequested(address receiver, uint256 amount);
 
     /**
      * @dev Constructor sets the initial pool address
@@ -70,5 +98,17 @@ contract TimeBasedDistributor is AccessControl {
      */
     function getNextDistributionTime() external view returns (uint256) {
         return pool.getNextDistributionTime();
+    }
+
+    function attemptFailedTransfers() external {
+        // Get all failed transfers
+        address[] memory failedAddresses = pool.getFailedTransfers();
+        // Attempt to retry each one
+        for (uint256 i = 0; i < failedAddresses.length; i++) {
+            address receiver = failedAddresses[i];
+            pool.retryFailedTransfer(receiver);
+        }
+        // Log results
+        emit FailedTransfersAttempted(failedAddresses);
     }
 }

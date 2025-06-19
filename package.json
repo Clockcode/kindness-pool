@@ -1,7 +1,10 @@
 {
   "name": "hardhat-project",
   "scripts": {
-    "typechain": "typechain --show-stack-traces --target ethers-v6 --out-dir ./typechain-types ./src/**/*.sol"
+    "typechain": "typechain --show-stack-traces --target ethers-v6 --out-dir ./typechain-types ./src/**/*.sol",
+    "compile": "hardhat compile",
+    "clean": "hardhat clean",
+    "test": "hardhat test"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-chai-matchers": "^2.0.8",
