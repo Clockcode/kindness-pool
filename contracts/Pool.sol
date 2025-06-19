@@ -38,6 +38,10 @@ contract Pool is AccessControl {
 
     // Mapping to track failed transfers
     mapping(address => FailedTransfer) public failedTransfers;
+    // Array of addresses with failed transfers for easy iteration
+    address[] public failedReceivers;
+    // Index mapping for efficient removal from failedReceivers array
+    mapping(address => uint256) private failedReceiverIndex;
 
     // Events
     event KindnessGiven(address indexed giver, uint256 amount);
@@ -59,6 +63,31 @@ contract Pool is AccessControl {
     uint256 public constant MAX_KINDNESS_AMOUNT = 1 ether;     // Maximum amount of 1 ETH
     uint256 public constant MAX_RETRIES = 3;
     uint256 public constant RETRY_COOLDOWN = 1 hours;
+
+    /**
+     * @dev Internal helper to add a failed receiver to tracking array
+     */
+    function _addFailedReceiver(address receiver) internal {
+        if (failedReceiverIndex[receiver] == 0) {
+            failedReceivers.push(receiver);
+            failedReceiverIndex[receiver] = failedReceivers.length; // index + 1
+        }
+    }
+
+    /**
+     * @dev Internal helper to remove a failed receiver from tracking array
+     */
+    function _removeFailedReceiver(address receiver) internal {
+        uint256 index = failedReceiverIndex[receiver];
+        if (index > 0) {
+            uint256 lastIndex = failedReceivers.length - 1;
+            address lastReceiver = failedReceivers[lastIndex];
+            failedReceivers[index - 1] = lastReceiver;
+            failedReceiverIndex[lastReceiver] = index;
+            failedReceivers.pop();
+            delete failedReceiverIndex[receiver];
+        }
+    }
 
     modifier rateLimited() {
         if (block.timestamp < lastActionTime[msg.sender] + ACTION_COOLDOWN) revert TooManyActions();
@@ -160,6 +189,7 @@ contract Pool is AccessControl {
                     timestamp: block.timestamp,
                     retryCount: 0
                 });
+                _addFailedReceiver(receiver);
                 failedAmount += amountPerReceiver;
                 emit TransferFailed(receiver, amountPerReceiver);
             }
@@ -260,6 +290,7 @@ contract Pool is AccessControl {
                 timestamp: block.timestamp,
                 retryCount: 0
             });
+            _addFailedReceiver(receiver);
             revert TransferFailedErr();
         }
     }
@@ -273,14 +304,17 @@ contract Pool is AccessControl {
         FailedTransfer storage failed = failedTransfers[receiver];
         if (failed.amount == 0) revert NoFailedTransfer();
         if (failed.retryCount >= MAX_RETRIES) revert MaxRetriesExceeded();
-        if (block.timestamp < failed.timestamp + RETRY_COOLDOWN) revert TooEarlyToRetry();
+        uint256 cooldown = RETRY_COOLDOWN * (1 << failed.retryCount);
+        if (block.timestamp < failed.timestamp + cooldown) revert TooEarlyToRetry();
 
         uint256 amount = failed.amount;
         delete failedTransfers[receiver];
+        _removeFailedReceiver(receiver);
 
         try this.transferToReceiver{gas: 21000}(receiver, amount) {
             emit TransferRetried(receiver, amount, true);
             emit KindnessReceived(receiver, amount);
+            unchecked { unclaimedFunds -= amount; }
         } catch {
             failedTransfers[receiver] = FailedTransfer({
                 receiver: receiver,  // Store the receiver address
@@ -288,6 +322,7 @@ contract Pool is AccessControl {
                 timestamp: block.timestamp,
                 retryCount: failed.retryCount + 1
             });
+            _addFailedReceiver(receiver);
             emit TransferRetried(receiver, amount, false);
         }
     }
@@ -322,35 +357,24 @@ contract Pool is AccessControl {
 
         uint256 amount = failed.amount;
         delete failedTransfers[receiver];
+        _removeFailedReceiver(receiver);
 
         try this.transferToReceiver{gas: 21000}(receiver, amount) {
             emit EmergencyWithdrawalCompleted(receiver, amount);
+            unchecked { unclaimedFunds -= amount; }
         } catch {
+            failedTransfers[receiver] = FailedTransfer({
+                receiver: receiver,
+                amount: amount,
+                timestamp: block.timestamp,
+                retryCount: failed.retryCount + 1
+            });
+            _addFailedReceiver(receiver);
             emit TransferFailed(receiver, amount);
         }
     }
 
     function getFailedTransfers() external view returns (address[] memory) {
-        uint256 count = 0;
-        // First count how many failed transfers we have
-        for (uint256 i = 0; i < receivers.length; i++) {
-            if (failedTransfers[receivers[i]].amount > 0) {
-                count++;
-            }
-        }
-
-        // Create array of the right size
-        address[] memory failedAddresses = new address[](count);
-        uint256 index = 0;
-
-        // Fill the array
-        for (uint256 i = 0; i < receivers.length; i++) {
-            if (failedTransfers[receivers[i]].amount > 0) {
-                failedAddresses[index] = receivers[i];
-                index++;
-            }
-        }
-
-        return failedAddresses;
+        return failedReceivers;
     }
 }

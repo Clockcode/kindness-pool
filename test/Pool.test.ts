@@ -2,6 +2,7 @@ import { expect } from "chai";
 import { ethers } from "hardhat";
 import { Pool } from "../typechain-types/contracts/Pool";
 import { UserRegistry } from "../typechain-types/contracts/UserRegistry";
+import { TestReceiver } from "../typechain-types/contracts/TestReceiver";
 
 describe("Pool", function () {
   let pool: Pool;
@@ -137,6 +138,45 @@ describe("Pool", function () {
       // Try to enter again
       await expect(pool.connect(addr1).enterReceiverPool())
         .to.be.revertedWithCustomError(pool, "AlreadyInReceiverPool");
+    });
+  });
+
+  describe("Failed transfer handling", function () {
+    let failingReceiver: TestReceiver;
+
+    beforeEach(async function () {
+      const TestReceiver = await ethers.getContractFactory("TestReceiver");
+      failingReceiver = await TestReceiver.deploy(await pool.getAddress());
+      await failingReceiver.waitForDeployment();
+
+      // Add some funds and authorize distribution
+      const amount = ethers.parseEther("0.5");
+      await pool.connect(addr1).giveKindness(amount, { value: amount });
+      await pool.connect(owner).grantRole(await pool.DISTRIBUTOR_ROLE(), owner.address);
+      await pool.connect(owner).setDistributionWindow(true);
+    });
+
+    it("Should track failed transfers and allow retry", async function () {
+      await pool.connect(owner).distributePool();
+
+      const receiverAddr = await failingReceiver.getAddress();
+      expect(await pool.getFailedTransfers()).to.deep.equal([receiverAddr]);
+      expect(await pool.getFailedTransferAmount(receiverAddr)).to.equal(
+        ethers.parseEther("0.5")
+      );
+      expect(await pool.unclaimedFunds()).to.equal(ethers.parseEther("0.5"));
+
+      await failingReceiver.setFail(false);
+
+      await ethers.provider.send("evm_increaseTime", [3600]);
+      await ethers.provider.send("evm_mine");
+
+      await expect(pool.retryFailedTransfer(receiverAddr))
+        .to.emit(pool, "TransferRetried")
+        .withArgs(receiverAddr, ethers.parseEther("0.5"), true);
+
+      expect(await pool.getFailedTransfers()).to.deep.equal([]);
+      expect(await pool.unclaimedFunds()).to.equal(0);
     });
   });
 });

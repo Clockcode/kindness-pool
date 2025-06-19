@@ -10,10 +10,10 @@
 - [x] Implement amount limits (0.001 to 1 ETH) in giveKindness function
 - [x] Add check to prevent users who have contributed from entering receiver pool
 - [x] Move isInRecieverPool to UserRegistry
-- [ ] Implement mechanism to handle failed transfers in distributePool
-  - Basic tracking exists but needs more robust handling
-  - Add retry mechanism with exponential backoff
-  - Implement emergency withdrawal for stuck funds
+- [x] Implement mechanism to handle failed transfers in distributePool
+  - Added robust tracking of failed receivers
+  - Added retry mechanism with exponential backoff
+  - Added emergency withdrawal handling for stuck funds
 - [ ] Add checks for contract balance before distribution
   - Add balance checks in distributePool
   - Add minimum balance requirements
@@ -45,6 +45,7 @@
   - Add gas limit tests
   - Add transaction limit tests
   - Add rate limit tests
+- [x] Add tests for failed transfer handling
 - [ ] Add documentation for the new functionality
   - Add README.md with setup instructions
   - Add API documentation
