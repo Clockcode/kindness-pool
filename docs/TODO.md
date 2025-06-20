@@ -17,10 +17,12 @@
 - [x] Add checks for contract balance before distribution
   - Implemented balance verification in distributePool
   - Added minimum pool balance constant
-- [ ] Add tracking for daily contributions to enforce giver/receiver rules
-  - Implement daily reset mechanism
-  - Add daily contribution limits
-  - Add daily receiver pool entry limits
+- [x] Add tracking for daily contributions to enforce giver/receiver rules
+  - Implemented daily reset mechanism using day counter
+  - Added daily contribution limits (5 ETH max per day)
+  - Added daily receiver pool entry limits (1 entry per day)
+  - Added lazy reset mechanism for gas efficiency
+  - Added helper functions for daily stats and limits
 - [ ] Set the rule that user can only enter and leave receiver pool once in a day
   - Add daily entry/exit tracking
   - Implement cooldown period

@@ -28,3 +28,5 @@ error EmergencyWithdrawalFailed();
 error NotAdmin();
 error InsufficientContractBalance();
 error PoolBalanceBelowMinimum();
+error DailyContributionLimitExceeded();
+error DailyReceiverEntryLimitExceeded();

@@ -60,6 +60,9 @@ contract UserRegistry is Ownable {
      * @param amount Amount involved in the action
      */
     function updateUserStats(address user, bool isGiving, uint256 amount) external {
+        // Allow calls from system or owner
+        if (msg.sender != system && msg.sender != owner()) revert NotSystem();
+
         UserStats storage stats = userStats[user];
 
         if (isGiving) {
@@ -104,7 +107,10 @@ contract UserRegistry is Ownable {
      * @param user Address of the user
      * @param _isInReceiverPool New receiver pool status
      */
-    function updateReceiverPoolStatus(address user, bool _isInReceiverPool) external onlySystem {
+    function updateReceiverPoolStatus(address user, bool _isInReceiverPool) external {
+        // Allow calls from system or owner
+        if (msg.sender != system && msg.sender != owner()) revert NotSystem();
+
         userStats[user].isInReceiverPool = _isInReceiverPool;
         emit ReceiverPoolStatusUpdated(user, _isInReceiverPool);
     }

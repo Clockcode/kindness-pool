@@ -28,6 +28,11 @@ contract Pool is AccessControl {
     uint256 public unclaimedFunds;                         // Track unclaimed funds
     bool public distributionWindowOpen;                    // Track if distribution window is open
 
+    // Daily reset mechanism
+    uint256 public currentDay;                           // Current day counter (increments every 24 hours)
+    mapping(address => uint256) public userLastDay;      // Track when user's data was last reset
+    mapping(address => uint256) public dailyReceiverEntries; // Track daily receiver pool entries per user
+
     // Track failed transfers
     struct FailedTransfer {
         address receiver;
@@ -65,6 +70,10 @@ contract Pool is AccessControl {
     uint256 public constant MAX_RETRIES = 3;
     uint256 public constant RETRY_COOLDOWN = 1 hours;
 
+    // Daily limits
+    uint256 public constant MAX_DAILY_CONTRIBUTION = 5 ether;  // Maximum daily contribution per user
+    uint256 public constant MAX_DAILY_RECEIVER_ENTRIES = 1;    // Maximum receiver pool entries per day
+
     /**
      * @dev Internal helper to add a failed receiver to tracking array
      */
@@ -87,6 +96,34 @@ contract Pool is AccessControl {
             failedReceiverIndex[lastReceiver] = index;
             failedReceivers.pop();
             delete failedReceiverIndex[receiver];
+        }
+    }
+
+    /**
+     * @dev Internal helper to update the current day counter
+     */
+    function _updateDay() internal {
+        uint256 dayNumber = block.timestamp / 1 days;
+        if (dayNumber > currentDay) {
+            currentDay = dayNumber;
+        }
+    }
+
+    /**
+     * @dev Internal helper to check if user's daily data needs to be reset
+     */
+    function _isNewDay(address user) internal view returns (bool) {
+        return userLastDay[user] < currentDay;
+    }
+
+    /**
+     * @dev Internal helper to reset user's daily data
+     */
+    function _resetDailyData(address user) internal {
+        if (_isNewDay(user)) {
+            dailyContributions[user] = 0;
+            dailyReceiverEntries[user] = 0;
+            userLastDay[user] = currentDay;
         }
     }
 
@@ -121,6 +158,15 @@ contract Pool is AccessControl {
         if (amount > MAX_KINDNESS_AMOUNT) revert AmountTooHigh();
         if (msg.value != amount) revert ValueMismatch();
 
+        // Update day counter and reset user's daily data if needed
+        _updateDay();
+        _resetDailyData(msg.sender);
+
+        // Check daily contribution limit
+        if (dailyContributions[msg.sender] + amount > MAX_DAILY_CONTRIBUTION) {
+            revert DailyContributionLimitExceeded();
+        }
+
         unchecked {
             dailyPool += amount;
             dailyContributions[msg.sender] += amount;
@@ -135,8 +181,19 @@ contract Pool is AccessControl {
      */
     function enterReceiverPool() external rateLimited transactionLimited {
         if (userRegistry.isInReceiverPool(msg.sender)) revert AlreadyInReceiverPool();
+
+        // Update day counter and reset user's daily data if needed
+        _updateDay();
+        _resetDailyData(msg.sender);
+
         if (dailyContributions[msg.sender] != 0) revert ContributedToday();
 
+        // Check daily receiver entry limit
+        if (dailyReceiverEntries[msg.sender] >= MAX_DAILY_RECEIVER_ENTRIES) {
+            revert DailyReceiverEntryLimitExceeded();
+        }
+
+        unchecked { dailyReceiverEntries[msg.sender]++; }
         receivers.push(msg.sender);
         userRegistry.updateReceiverPoolStatus(msg.sender, true);
         emit EnteredReceiverPool(msg.sender);
@@ -174,8 +231,11 @@ contract Pool is AccessControl {
         // Distribute to each receiver
         for (uint256 i = 0; i < currentReceivers.length; i++) {
             address receiver = currentReceivers[i];
-            // Reset daily contributions
+
+            // Reset all daily data for the receiver
             dailyContributions[receiver] = 0;
+            dailyReceiverEntries[receiver] = 0;
+            userLastDay[receiver] = currentDay;
 
             // Update user registry state before external call
             userRegistry.updateReceiverPoolStatus(receiver, false);
@@ -256,13 +316,13 @@ contract Pool is AccessControl {
         }
 
         uint256 lastDistDay = lastDistributionTime / 1 days;
-        uint256 currentDay = block.timestamp / 1 days;
+        uint256 today = block.timestamp / 1 days;
 
-        if (lastDistDay < currentDay) {
+        if (lastDistDay < today) {
             // If we haven't distributed today, next distribution is at next UTC midnight
-            return (currentDay + 1) * 1 days;
+            return (today + 1) * 1 days;
         }
-        return (currentDay + 2) * 1 days;
+        return (today + 2) * 1 days;
     }
 
     // Test-only function to control distribution window
@@ -379,5 +439,63 @@ contract Pool is AccessControl {
 
     function getFailedTransfers() external view returns (address[] memory) {
         return failedReceivers;
+    }
+
+    /**
+     * @dev Returns the current day number (days since epoch)
+     * @return uint256 Current day number
+     */
+    function getCurrentDay() external view returns (uint256) {
+        return block.timestamp / 1 days;
+    }
+
+    /**
+     * @dev Returns user's daily statistics
+     * @param user Address of the user
+     * @return contributionAmount Current daily contribution amount
+     * @return receiverEntries Current daily receiver pool entries
+     * @return lastResetDay Day when user's data was last reset
+     * @return canContribute Whether user can contribute more today
+     * @return canEnterReceiverPool Whether user can enter receiver pool today
+     */
+    function getUserDailyStats(address user) external view returns (
+        uint256 contributionAmount,
+        uint256 receiverEntries,
+        uint256 lastResetDay,
+        bool canContribute,
+        bool canEnterReceiverPool
+    ) {
+        uint256 today = block.timestamp / 1 days;
+
+        // If user's data is from a previous day, they haven't contributed or entered today
+        if (userLastDay[user] < today) {
+            contributionAmount = 0;
+            receiverEntries = 0;
+            lastResetDay = userLastDay[user];
+            canContribute = true;
+            canEnterReceiverPool = true;
+        } else {
+            contributionAmount = dailyContributions[user];
+            receiverEntries = dailyReceiverEntries[user];
+            lastResetDay = userLastDay[user];
+            canContribute = contributionAmount < MAX_DAILY_CONTRIBUTION;
+            canEnterReceiverPool = receiverEntries < MAX_DAILY_RECEIVER_ENTRIES && contributionAmount == 0;
+        }
+    }
+
+    /**
+     * @dev Returns the remaining daily contribution limit for a user
+     * @param user Address of the user
+     * @return uint256 Remaining amount user can contribute today
+     */
+    function getRemainingDailyContribution(address user) external view returns (uint256) {
+        uint256 today = block.timestamp / 1 days;
+
+        if (userLastDay[user] < today) {
+            return MAX_DAILY_CONTRIBUTION;
+        }
+
+        uint256 used = dailyContributions[user];
+        return used >= MAX_DAILY_CONTRIBUTION ? 0 : MAX_DAILY_CONTRIBUTION - used;
     }
 }

@@ -77,9 +77,13 @@ describe("UserRegistry", function () {
       userRegistry = await UserRegistry.deploy(owner.address);
       await userRegistry.waitForDeployment();
     });
-
-    it("Should allow any address to update user stats", async function () {
+    it("Should prevent non-system from updating user stats", async function () {
       await expect(userRegistry.connect(addr1).updateUserStats(addr2.address, true, 100))
+        .to.be.revertedWithCustomError(userRegistry, "NotSystem");
+    });
+
+    it("Should allow system to update user stats", async function () {
+      await expect(userRegistry.connect(owner).updateUserStats(addr2.address, true, 100))
         .to.emit(userRegistry, "UserStatsUpdated")
         .withArgs(addr2.address, true, 100, 100, 0, 100);
     });
