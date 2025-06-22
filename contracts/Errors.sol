@@ -33,3 +33,7 @@ error DailyReceiverEntryLimitExceeded();
 error DailyReceiverExitLimitExceeded();
 error NotInReceiverPool();
 error EmergencyExitNotAllowed();
+error InsufficientContribution();
+error DailyWithdrawalLimitExceeded();
+error WithdrawalCooldownActive();
+error WithdrawalAmountTooLow();

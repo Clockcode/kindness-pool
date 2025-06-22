@@ -83,6 +83,34 @@ contract UserRegistry is Ownable {
     }
 
     /**
+     * @dev Updates user statistics for withdrawal (reduces totalGiven)
+     * @param user Address of the user
+     * @param amount Amount withdrawn
+     */
+    function updateUserStatsWithdrawal(address user, uint256 amount) external {
+        // Allow calls from system or owner
+        if (msg.sender != system && msg.sender != owner()) revert NotSystem();
+
+        UserStats storage stats = userStats[user];
+
+        // Reduce totalGiven by withdrawal amount
+        if (stats.totalGiven >= amount) {
+            unchecked {
+                stats.totalGiven -= amount;
+            }
+        } else {
+            stats.totalGiven = 0; // Prevent underflow
+        }
+
+        stats.lastActionTime = block.timestamp;
+
+        // Calculate net amount
+        int256 netAmount = int256(stats.totalGiven) - int256(stats.totalReceived);
+
+        emit UserStatsUpdated(user, false, amount, stats.totalGiven, stats.totalReceived, netAmount);
+    }
+
+    /**
      * @dev Sets or updates a user's display name
      * @param name The display name to set
      */
