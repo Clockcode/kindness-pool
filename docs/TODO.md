@@ -31,9 +31,10 @@
   - Updated daily stats to include exit tracking
 
 # Best Practices & Documentation (Medium Priority)
-- [ ] Set Prettier solidity plugin to format the code
-  - Add .prettierrc configuration
-  - Add format scripts to package.json
+- [x] Set Prettier solidity plugin to format the code
+  - Added .prettierrc configuration with Solidity-specific formatting rules
+  - Added format and format:check scripts to package.json
+  - Formatted existing contracts with new configuration
 - [x] Use custom errors instead of require statements
 - [x] Add NatSpec documentation for all functions
 - [x] Add input validation for constructor parameters
@@ -41,16 +42,24 @@
 - [x] Add events for failed transfers and redistributions
 
 # Testing & Additional Features (Lower Priority)
-- [ ] Add tests for denial of service attacks
-  - Add gas limit tests
-  - Add transaction limit tests
-  - Add rate limit tests
+- [x] Add tests for denial of service attacks
+  - Added comprehensive DoS attack resistance tests
+  - Added gas limit tests for receiver pool size and failed transfers
+  - Added transaction limit tests for daily limits and reset mechanisms
+  - Added rate limit tests for cooldown periods and daily limits
+  - Added resource exhaustion tests for failed transfer handling
+  - Documented transaction count reset bug in daily mechanism
 - [x] Add tests for failed transfer handling
-- [ ] Add documentation for the new functionality
-  - Add README.md with setup instructions
-  - Add API documentation
-  - Add deployment guide
-- [ ] Implement withdrawal functionality for users who want to withdraw their contribution
-  - Add withdrawal function
-  - Add withdrawal limits
-  - Add withdrawal cooldown
+- [x] Add documentation for the new functionality
+  - Updated README.md with comprehensive setup instructions, API overview, and deployment guide
+  - Added detailed API.md with complete contract documentation, function references, and integration examples
+  - Added DEPLOYMENT.md with step-by-step deployment instructions for all networks
+  - Included security considerations, troubleshooting guides, and best practices
+  - Documented new functionality including DoS protection, daily limits, and failed transfer handling
+- [x] Implement withdrawal functionality for users who want to withdraw their contribution
+  - Added withdrawContribution function allowing users to withdraw same-day contributions
+  - Implemented withdrawal limits: 3 withdrawals per day, 2-hour cooldown between withdrawals
+  - Added minimum withdrawal amount (0.001 ETH) and comprehensive validation
+  - Added withdrawal tracking with automatic daily reset mechanism
+  - Included comprehensive view functions for withdrawal status and limits
+  - Added comprehensive test suite covering all withdrawal scenarios
