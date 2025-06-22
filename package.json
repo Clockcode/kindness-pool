@@ -4,7 +4,9 @@
     "typechain": "typechain --show-stack-traces --target ethers-v6 --out-dir ./typechain-types ./src/**/*.sol",
     "compile": "hardhat compile",
     "clean": "hardhat clean",
-    "test": "hardhat test"
+    "test": "hardhat test",
+    "format": "prettier --write 'contracts/**/*.sol'",
+    "format:check": "prettier --check 'contracts/**/*.sol'"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-chai-matchers": "^2.0.8",
@@ -15,6 +17,8 @@
     "dotenv": "^16.5.0",
     "ethers": "^6.14.3",
     "hardhat": "^2.24.2",
+    "prettier": "^3.5.3",
+    "prettier-plugin-solidity": "^2.0.0",
     "typechain": "^8.3.2"
   },
   "dependencies": {

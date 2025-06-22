@@ -9,21 +9,19 @@ import "./Errors.sol";
  * @dev Manages user statistics and emits events for leaderboard tracking
  */
 contract UserRegistry is Ownable {
-
-
     // Struct to store user statistics
     struct UserStats {
-        uint256 totalGiven;      // Total amount given by user
-        uint256 totalReceived;   // Total amount received by user
-        uint256 timesReceived;   // Number of times user received kindness
-        uint256 lastActionTime;  // Timestamp of last action
-        string name;             // User's display name
-        bool isInReceiverPool;   // Whether user is currently in receiver pool
+        uint256 totalGiven; // Total amount given by user
+        uint256 totalReceived; // Total amount received by user
+        uint256 timesReceived; // Number of times user received kindness
+        uint256 lastActionTime; // Timestamp of last action
+        string name; // User's display name
+        bool isInReceiverPool; // Whether user is currently in receiver pool
     }
 
     // State variables
-    address public system;             // Address of the KindnessSystem contract
-    mapping(address => UserStats) public userStats;  // User statistics
+    address public system; // Address of the KindnessSystem contract
+    mapping(address => UserStats) public userStats; // User statistics
 
     // Events
     event UserStatsUpdated(
@@ -66,7 +64,9 @@ contract UserRegistry is Ownable {
         UserStats storage stats = userStats[user];
 
         if (isGiving) {
-            unchecked { stats.totalGiven += amount; }
+            unchecked {
+                stats.totalGiven += amount;
+            }
         } else {
             unchecked {
                 stats.totalReceived += amount;
@@ -79,14 +79,7 @@ contract UserRegistry is Ownable {
         // Calculate net amount (positive if given more than received, negative if received more than given)
         int256 netAmount = int256(stats.totalGiven) - int256(stats.totalReceived);
 
-        emit UserStatsUpdated(
-            user,
-            isGiving,
-            amount,
-            stats.totalGiven,
-            stats.totalReceived,
-            netAmount
-        );
+        emit UserStatsUpdated(user, isGiving, amount, stats.totalGiven, stats.totalReceived, netAmount);
     }
 
     /**

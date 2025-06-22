@@ -30,3 +30,6 @@ error InsufficientContractBalance();
 error PoolBalanceBelowMinimum();
 error DailyContributionLimitExceeded();
 error DailyReceiverEntryLimitExceeded();
+error DailyReceiverExitLimitExceeded();
+error NotInReceiverPool();
+error EmergencyExitNotAllowed();

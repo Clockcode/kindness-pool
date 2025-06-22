@@ -41,7 +41,7 @@ contract TimeBasedDistributor is AccessControl {
     bytes32 public constant DISTRIBUTOR_ROLE = keccak256("DISTRIBUTOR_ROLE");
 
     // The Pool contract that this distributor will interact with
-    Pool public pool;  // Cannot be immutable as it needs to be updatable
+    Pool public pool; // Cannot be immutable as it needs to be updatable
 
     // Events for tracking important actions
     event DistributionAttempted(uint256 timestamp, bool success);

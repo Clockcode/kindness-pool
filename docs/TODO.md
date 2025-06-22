@@ -23,10 +23,12 @@
   - Added daily receiver pool entry limits (1 entry per day)
   - Added lazy reset mechanism for gas efficiency
   - Added helper functions for daily stats and limits
-- [ ] Set the rule that user can only enter and leave receiver pool once in a day
-  - Add daily entry/exit tracking
-  - Implement cooldown period
-  - Add emergency exit mechanism
+- [x] Set the rule that user can only enter and leave receiver pool once in a day
+  - Added daily entry/exit tracking with separate counters
+  - Implemented 30-minute cooldown period between receiver pool actions
+  - Added emergency exit mechanism for administrators
+  - Added leaveReceiverPool function for users
+  - Updated daily stats to include exit tracking
 
 # Best Practices & Documentation (Medium Priority)
 - [ ] Set Prettier solidity plugin to format the code

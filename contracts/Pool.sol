@@ -10,28 +10,29 @@ import "./Errors.sol";
  * @dev Manages the daily pool of contributions and distributions
  */
 contract Pool is AccessControl {
-
     // Add the DISTRIBUTOR_ROLE constant
     bytes32 public constant DISTRIBUTOR_ROLE = keccak256("DISTRIBUTOR_ROLE");
 
     // State variables
-    uint256 public dailyPool;                    // Current day's pool amount
-    uint256 public lastDistributionTime;         // Timestamp of last distribution
-    address[] public receivers;                  // List of current receivers
+    uint256 public dailyPool; // Current day's pool amount
+    uint256 public lastDistributionTime; // Timestamp of last distribution
+    address[] public receivers; // List of current receivers
     // Question: Why is UserRegistry immutable? and why is it gas saving?
-    UserRegistry public immutable userRegistry;  // Make immutable for gas savings
+    UserRegistry public immutable userRegistry; // Make immutable for gas savings
     mapping(address => uint256) public lastActionTime;
     uint256 public constant ACTION_COOLDOWN = 1 hours;
     mapping(address => uint256) public transactionCount;
     uint256 public constant MAX_TRANSACTIONS_PER_DAY = 10;
-    mapping(address => uint256) public dailyContributions;  // Track daily contributions per user
-    uint256 public unclaimedFunds;                         // Track unclaimed funds
-    bool public distributionWindowOpen;                    // Track if distribution window is open
+    mapping(address => uint256) public dailyContributions; // Track daily contributions per user
+    uint256 public unclaimedFunds; // Track unclaimed funds
+    bool public distributionWindowOpen; // Track if distribution window is open
 
     // Daily reset mechanism
-    uint256 public currentDay;                           // Current day counter (increments every 24 hours)
-    mapping(address => uint256) public userLastDay;      // Track when user's data was last reset
+    uint256 public currentDay; // Current day counter (increments every 24 hours)
+    mapping(address => uint256) public userLastDay; // Track when user's data was last reset
     mapping(address => uint256) public dailyReceiverEntries; // Track daily receiver pool entries per user
+    mapping(address => uint256) public dailyReceiverExits; // Track daily receiver pool exits per user
+    mapping(address => uint256) public lastReceiverPoolAction; // Track last receiver pool action time
 
     // Track failed transfers
     struct FailedTransfer {
@@ -53,26 +54,30 @@ contract Pool is AccessControl {
     event KindnessReceived(address indexed receiver, uint256 amount);
     event PoolDistributed(uint256 totalAmount, uint256 receiverCount);
     event EnteredReceiverPool(address indexed receiver);
+    event LeftReceiverPool(address indexed receiver);
     event TransferFailed(address indexed receiver, uint256 amount);
     event TransferRetried(address indexed receiver, uint256 amount, bool success);
     event UnclaimedFundsUpdated(uint256 amount);
     event DistributionWindowUpdated(bool isOpen);
     event EmergencyWithdrawalRequested(address indexed receiver, uint256 amount);
     event EmergencyWithdrawalCompleted(address indexed receiver, uint256 amount);
+    event EmergencyExitCompleted(address indexed user);
 
     // Constants
     uint256 public constant DISTRIBUTION_INTERVAL = 1 days;
-    uint256 public constant DISTRIBUTION_WINDOW = 5 minutes;  // 5-minute window for distribution
+    uint256 public constant DISTRIBUTION_WINDOW = 5 minutes; // 5-minute window for distribution
     uint256 public constant MAX_RECEIVERS = 100; // Adjust based on your needs
     uint256 public constant MIN_KINDNESS_AMOUNT = 0.001 ether; // Minimum amount of 0.001 ETH
-    uint256 public constant MAX_KINDNESS_AMOUNT = 1 ether;     // Maximum amount of 1 ETH
-    uint256 public constant MIN_POOL_BALANCE = 0.01 ether;     // Minimum pool balance required to distribute
+    uint256 public constant MAX_KINDNESS_AMOUNT = 1 ether; // Maximum amount of 1 ETH
+    uint256 public constant MIN_POOL_BALANCE = 0.01 ether; // Minimum pool balance required to distribute
     uint256 public constant MAX_RETRIES = 3;
     uint256 public constant RETRY_COOLDOWN = 1 hours;
 
     // Daily limits
-    uint256 public constant MAX_DAILY_CONTRIBUTION = 5 ether;  // Maximum daily contribution per user
-    uint256 public constant MAX_DAILY_RECEIVER_ENTRIES = 1;    // Maximum receiver pool entries per day
+    uint256 public constant MAX_DAILY_CONTRIBUTION = 5 ether; // Maximum daily contribution per user
+    uint256 public constant MAX_DAILY_RECEIVER_ENTRIES = 1; // Maximum receiver pool entries per day
+    uint256 public constant MAX_DAILY_RECEIVER_EXITS = 1; // Maximum receiver pool exits per day
+    uint256 public constant RECEIVER_POOL_COOLDOWN = 30 minutes; // Cooldown between receiver pool actions
 
     /**
      * @dev Internal helper to add a failed receiver to tracking array
@@ -123,7 +128,22 @@ contract Pool is AccessControl {
         if (_isNewDay(user)) {
             dailyContributions[user] = 0;
             dailyReceiverEntries[user] = 0;
+            dailyReceiverExits[user] = 0;
             userLastDay[user] = currentDay;
+        }
+    }
+
+    /**
+     * @dev Internal helper to remove a user from the receivers array
+     */
+    function _removeFromReceivers(address user) internal {
+        for (uint256 i = 0; i < receivers.length; i++) {
+            if (receivers[i] == user) {
+                // Move the last element to the current position
+                receivers[i] = receivers[receivers.length - 1];
+                receivers.pop();
+                break;
+            }
         }
     }
 
@@ -136,7 +156,17 @@ contract Pool is AccessControl {
     modifier transactionLimited() {
         if (transactionCount[msg.sender] >= MAX_TRANSACTIONS_PER_DAY) revert TooManyTransactions();
         // Question: How does unchecked work?
-        unchecked { transactionCount[msg.sender]++; }
+        unchecked {
+            transactionCount[msg.sender]++;
+        }
+        _;
+    }
+
+    modifier receiverPoolCooldown() {
+        if (block.timestamp < lastReceiverPoolAction[msg.sender] + RECEIVER_POOL_COOLDOWN) {
+            revert TooManyActions();
+        }
+        lastReceiverPoolAction[msg.sender] = block.timestamp;
         _;
     }
 
@@ -179,7 +209,7 @@ contract Pool is AccessControl {
     /**
      * @dev Allows users to enter the receiver pool
      */
-    function enterReceiverPool() external rateLimited transactionLimited {
+    function enterReceiverPool() external receiverPoolCooldown transactionLimited {
         if (userRegistry.isInReceiverPool(msg.sender)) revert AlreadyInReceiverPool();
 
         // Update day counter and reset user's daily data if needed
@@ -193,10 +223,51 @@ contract Pool is AccessControl {
             revert DailyReceiverEntryLimitExceeded();
         }
 
-        unchecked { dailyReceiverEntries[msg.sender]++; }
+        unchecked {
+            dailyReceiverEntries[msg.sender]++;
+        }
         receivers.push(msg.sender);
         userRegistry.updateReceiverPoolStatus(msg.sender, true);
         emit EnteredReceiverPool(msg.sender);
+    }
+
+    /**
+     * @dev Allows users to leave the receiver pool
+     */
+    function leaveReceiverPool() external receiverPoolCooldown transactionLimited {
+        if (!userRegistry.isInReceiverPool(msg.sender)) revert NotInReceiverPool();
+
+        // Update day counter and reset user's daily data if needed
+        _updateDay();
+        _resetDailyData(msg.sender);
+
+        // Check daily receiver exit limit
+        if (dailyReceiverExits[msg.sender] >= MAX_DAILY_RECEIVER_EXITS) {
+            revert DailyReceiverExitLimitExceeded();
+        }
+
+        unchecked {
+            dailyReceiverExits[msg.sender]++;
+        }
+
+        // Remove user from receivers array
+        _removeFromReceivers(msg.sender);
+        userRegistry.updateReceiverPoolStatus(msg.sender, false);
+        emit LeftReceiverPool(msg.sender);
+    }
+
+    /**
+     * @dev Emergency exit function for administrators to remove users from receiver pool
+     * @dev Only callable by admin role
+     * @param user Address of the user to remove
+     */
+    function emergencyExitReceiverPool(address user) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (!userRegistry.isInReceiverPool(user)) revert NotInReceiverPool();
+
+        // Remove user from receivers array
+        _removeFromReceivers(user);
+        userRegistry.updateReceiverPoolStatus(user, false);
+        emit EmergencyExitCompleted(user);
     }
 
     /**
@@ -235,6 +306,7 @@ contract Pool is AccessControl {
             // Reset all daily data for the receiver
             dailyContributions[receiver] = 0;
             dailyReceiverEntries[receiver] = 0;
+            dailyReceiverExits[receiver] = 0;
             userLastDay[receiver] = currentDay;
 
             // Update user registry state before external call
@@ -242,12 +314,12 @@ contract Pool is AccessControl {
             userRegistry.updateUserStats(receiver, false, amountPerReceiver);
 
             // Make external call
-            try this.transferToReceiver{gas: 21000}(receiver, amountPerReceiver) {
+            try this.transferToReceiver{ gas: 21000 }(receiver, amountPerReceiver) {
                 emit PoolDistributed(amountPerReceiver, 1);
             } catch {
                 // Track failed transfer
                 failedTransfers[receiver] = FailedTransfer({
-                    receiver: receiver,  // Store the receiver address
+                    receiver: receiver, // Store the receiver address
                     amount: amountPerReceiver,
                     timestamp: block.timestamp,
                     retryCount: 0
@@ -256,12 +328,16 @@ contract Pool is AccessControl {
                 failedAmount += amountPerReceiver;
                 emit TransferFailed(receiver, amountPerReceiver);
             }
-            unchecked { i++; }
+            unchecked {
+                i++;
+            }
         }
 
         // Update unclaimed funds
         if (failedAmount > 0) {
-            unchecked { unclaimedFunds += failedAmount; }
+            unchecked {
+                unclaimedFunds += failedAmount;
+            }
             emit UnclaimedFundsUpdated(unclaimedFunds);
         }
 
@@ -374,13 +450,15 @@ contract Pool is AccessControl {
         delete failedTransfers[receiver];
         _removeFailedReceiver(receiver);
 
-        try this.transferToReceiver{gas: 21000}(receiver, amount) {
+        try this.transferToReceiver{ gas: 21000 }(receiver, amount) {
             emit TransferRetried(receiver, amount, true);
             emit KindnessReceived(receiver, amount);
-            unchecked { unclaimedFunds -= amount; }
+            unchecked {
+                unclaimedFunds -= amount;
+            }
         } catch {
             failedTransfers[receiver] = FailedTransfer({
-                receiver: receiver,  // Store the receiver address
+                receiver: receiver, // Store the receiver address
                 amount: amount,
                 timestamp: block.timestamp,
                 retryCount: failed.retryCount + 1
@@ -422,9 +500,11 @@ contract Pool is AccessControl {
         delete failedTransfers[receiver];
         _removeFailedReceiver(receiver);
 
-        try this.transferToReceiver{gas: 21000}(receiver, amount) {
+        try this.transferToReceiver{ gas: 21000 }(receiver, amount) {
             emit EmergencyWithdrawalCompleted(receiver, amount);
-            unchecked { unclaimedFunds -= amount; }
+            unchecked {
+                unclaimedFunds -= amount;
+            }
         } catch {
             failedTransfers[receiver] = FailedTransfer({
                 receiver: receiver,
@@ -454,32 +534,46 @@ contract Pool is AccessControl {
      * @param user Address of the user
      * @return contributionAmount Current daily contribution amount
      * @return receiverEntries Current daily receiver pool entries
+     * @return receiverExits Current daily receiver pool exits
      * @return lastResetDay Day when user's data was last reset
      * @return canContribute Whether user can contribute more today
      * @return canEnterReceiverPool Whether user can enter receiver pool today
+     * @return canLeaveReceiverPool Whether user can leave receiver pool today
      */
-    function getUserDailyStats(address user) external view returns (
-        uint256 contributionAmount,
-        uint256 receiverEntries,
-        uint256 lastResetDay,
-        bool canContribute,
-        bool canEnterReceiverPool
-    ) {
+    function getUserDailyStats(
+        address user
+    )
+        external
+        view
+        returns (
+            uint256 contributionAmount,
+            uint256 receiverEntries,
+            uint256 receiverExits,
+            uint256 lastResetDay,
+            bool canContribute,
+            bool canEnterReceiverPool,
+            bool canLeaveReceiverPool
+        )
+    {
         uint256 today = block.timestamp / 1 days;
 
         // If user's data is from a previous day, they haven't contributed or entered today
         if (userLastDay[user] < today) {
             contributionAmount = 0;
             receiverEntries = 0;
+            receiverExits = 0;
             lastResetDay = userLastDay[user];
             canContribute = true;
             canEnterReceiverPool = true;
+            canLeaveReceiverPool = userRegistry.isInReceiverPool(user);
         } else {
             contributionAmount = dailyContributions[user];
             receiverEntries = dailyReceiverEntries[user];
+            receiverExits = dailyReceiverExits[user];
             lastResetDay = userLastDay[user];
             canContribute = contributionAmount < MAX_DAILY_CONTRIBUTION;
             canEnterReceiverPool = receiverEntries < MAX_DAILY_RECEIVER_ENTRIES && contributionAmount == 0;
+            canLeaveReceiverPool = receiverExits < MAX_DAILY_RECEIVER_EXITS && userRegistry.isInReceiverPool(user);
         }
     }
 
