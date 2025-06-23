@@ -82,7 +82,7 @@ contract Pool is AccessControl {
     uint256 public constant MAX_DAILY_RECEIVER_ENTRIES = 1; // Maximum receiver pool entries per day
     uint256 public constant MAX_DAILY_RECEIVER_EXITS = 1; // Maximum receiver pool exits per day
     uint256 public constant RECEIVER_POOL_COOLDOWN = 30 minutes; // Cooldown between receiver pool actions
-    
+
     // Withdrawal limits
     uint256 public constant MAX_DAILY_WITHDRAWALS = 3; // Maximum withdrawals per day
     uint256 public constant WITHDRAWAL_COOLDOWN = 2 hours; // Cooldown between withdrawals
@@ -139,6 +139,7 @@ contract Pool is AccessControl {
             dailyReceiverEntries[user] = 0;
             dailyReceiverExits[user] = 0;
             dailyWithdrawals[user] = 0;
+            transactionCount[user] = 0;
             userLastDay[user] = currentDay;
         }
     }
@@ -155,6 +156,12 @@ contract Pool is AccessControl {
                 break;
             }
         }
+    }
+
+    modifier dailyReset() {
+        _updateDay();
+        _resetDailyData(msg.sender);
+        _;
     }
 
     modifier rateLimited() {
@@ -204,14 +211,10 @@ contract Pool is AccessControl {
      * @dev Allows users to contribute to the daily pool
      * @param amount The amount to contribute (must be between 0.001 and 1 ETH)
      */
-    function giveKindness(uint256 amount) external payable transactionLimited {
+    function giveKindness(uint256 amount) external payable dailyReset transactionLimited {
         if (amount < MIN_KINDNESS_AMOUNT) revert AmountTooLow();
         if (amount > MAX_KINDNESS_AMOUNT) revert AmountTooHigh();
         if (msg.value != amount) revert ValueMismatch();
-
-        // Update day counter and reset user's daily data if needed
-        _updateDay();
-        _resetDailyData(msg.sender);
 
         // Check daily contribution limit
         if (dailyContributions[msg.sender] + amount > MAX_DAILY_CONTRIBUTION) {
@@ -230,12 +233,8 @@ contract Pool is AccessControl {
     /**
      * @dev Allows users to enter the receiver pool
      */
-    function enterReceiverPool() external receiverPoolCooldown transactionLimited {
+    function enterReceiverPool() external dailyReset receiverPoolCooldown transactionLimited {
         if (userRegistry.isInReceiverPool(msg.sender)) revert AlreadyInReceiverPool();
-
-        // Update day counter and reset user's daily data if needed
-        _updateDay();
-        _resetDailyData(msg.sender);
 
         if (dailyContributions[msg.sender] != 0) revert ContributedToday();
 
@@ -255,12 +254,8 @@ contract Pool is AccessControl {
     /**
      * @dev Allows users to leave the receiver pool
      */
-    function leaveReceiverPool() external receiverPoolCooldown transactionLimited {
+    function leaveReceiverPool() external dailyReset receiverPoolCooldown transactionLimited {
         if (!userRegistry.isInReceiverPool(msg.sender)) revert NotInReceiverPool();
-
-        // Update day counter and reset user's daily data if needed
-        _updateDay();
-        _resetDailyData(msg.sender);
 
         // Check daily receiver exit limit
         if (dailyReceiverExits[msg.sender] >= MAX_DAILY_RECEIVER_EXITS) {
@@ -281,36 +276,33 @@ contract Pool is AccessControl {
      * @dev Allows users to withdraw their contribution from the current day's pool
      * @param amount Amount to withdraw (must be <= user's daily contribution)
      */
-    function withdrawContribution(uint256 amount) 
-        external 
-        withdrawalCooldown 
-        transactionLimited 
+    function withdrawContribution(uint256 amount)
+        external
+        dailyReset
+        withdrawalCooldown
+        transactionLimited
     {
         if (amount < MIN_WITHDRAWAL_AMOUNT) revert WithdrawalAmountTooLow();
-        
-        // Update day counter and reset user's daily data if needed
-        _updateDay();
-        _resetDailyData(msg.sender);
-        
+
         // Check if user has sufficient contribution to withdraw
         if (amount > dailyContributions[msg.sender]) revert InsufficientContribution();
-        
+
         // Check daily withdrawal limit
         if (dailyWithdrawals[msg.sender] >= MAX_DAILY_WITHDRAWALS) {
             revert DailyWithdrawalLimitExceeded();
         }
-        
+
         // Check if pool has sufficient balance
         if (amount > dailyPool) revert InsufficientContractBalance();
         if (address(this).balance < amount) revert InsufficientContractBalance();
-        
+
         // Update state before external call (checks-effects-interactions)
         unchecked {
             dailyPool -= amount;
             dailyContributions[msg.sender] -= amount;
             dailyWithdrawals[msg.sender]++;
         }
-        
+
         // Attempt withdrawal
         (bool success, ) = payable(msg.sender).call{value: amount}("");
         if (!success) {
@@ -323,7 +315,7 @@ contract Pool is AccessControl {
             emit WithdrawalFailed(msg.sender, amount);
             revert TransferFailedErr();
         }
-        
+
         emit ContributionWithdrawn(msg.sender, amount);
         userRegistry.updateUserStatsWithdrawal(msg.sender, amount); // Reduce totalGiven by withdrawal amount
     }
@@ -672,11 +664,11 @@ contract Pool is AccessControl {
      */
     function getWithdrawableAmount(address user) external view returns (uint256) {
         uint256 today = block.timestamp / 1 days;
-        
+
         if (userLastDay[user] < today) {
             return 0; // No contributions today means nothing to withdraw
         }
-        
+
         return dailyContributions[user];
     }
 
@@ -688,18 +680,18 @@ contract Pool is AccessControl {
      * @return nextWithdrawalTime Timestamp when user can withdraw again
      * @return withdrawableAmount Amount user can withdraw
      */
-    function getUserWithdrawalStats(address user) 
-        external 
-        view 
+    function getUserWithdrawalStats(address user)
+        external
+        view
         returns (
             uint256 withdrawalCount,
             bool canWithdraw,
             uint256 nextWithdrawalTime,
             uint256 withdrawableAmount
-        ) 
+        )
     {
         uint256 today = block.timestamp / 1 days;
-        
+
         if (userLastDay[user] < today) {
             withdrawalCount = 0;
             withdrawableAmount = 0;
@@ -707,11 +699,11 @@ contract Pool is AccessControl {
             withdrawalCount = dailyWithdrawals[user];
             withdrawableAmount = dailyContributions[user];
         }
-        
+
         bool cooldownPassed = block.timestamp >= lastWithdrawalTime[user] + WITHDRAWAL_COOLDOWN;
         bool withinDailyLimit = withdrawalCount < MAX_DAILY_WITHDRAWALS;
         bool hasContribution = withdrawableAmount > 0;
-        
+
         canWithdraw = cooldownPassed && withinDailyLimit && hasContribution;
         nextWithdrawalTime = lastWithdrawalTime[user] + WITHDRAWAL_COOLDOWN;
     }
@@ -722,14 +714,14 @@ contract Pool is AccessControl {
      * @return withdrawalCooldownPeriod Cooldown period between withdrawals
      * @return minWithdrawalAmount Minimum withdrawal amount
      */
-    function getWithdrawalLimits() 
-        external 
-        pure 
+    function getWithdrawalLimits()
+        external
+        pure
         returns (
             uint256 maxDailyWithdrawals,
             uint256 withdrawalCooldownPeriod,
             uint256 minWithdrawalAmount
-        ) 
+        )
     {
         return (MAX_DAILY_WITHDRAWALS, WITHDRAWAL_COOLDOWN, MIN_WITHDRAWAL_AMOUNT);
     }
