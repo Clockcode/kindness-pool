@@ -32,6 +32,9 @@ contract Pool is AccessControl {
     bool public distributionInProgress; // Track if distribution is currently in progress
     uint256 public distributionStartTime; // When current distribution started
     address[] public distributionSnapshot; // Snapshot of receivers at distribution start
+    
+    // Auto-retry state
+    uint256 public lastAutoRetryTime; // Last time auto-retry was attempted
 
     // Daily reset mechanism
     uint256 public currentDay; // Current day counter (increments every 24 hours)
@@ -74,6 +77,7 @@ contract Pool is AccessControl {
     event WithdrawalFailed(address indexed user, uint256 amount);
     event BatchDistributed(uint256 batchSize, uint256 processedCount, uint256 totalReceivers);
     event DistributionStopped(uint256 timestamp);
+    event AutoRetryCompleted(uint256 retriedCount, uint256 successCount);
 
     // Constants
     uint256 public constant DISTRIBUTION_INTERVAL = 1 days;
@@ -85,6 +89,7 @@ contract Pool is AccessControl {
     uint256 public constant MAX_RETRIES = 3;
     uint256 public constant RETRY_COOLDOWN = 1 hours;
     uint256 public constant DISTRIBUTION_BATCH_SIZE = 25; // Maximum receivers per distribution batch
+    uint256 public constant MAX_AUTO_RETRIES_PER_TX = 5; // Maximum retries to process in one transaction
 
     // Daily limits
     uint256 public constant MAX_DAILY_CONTRIBUTION = 5 ether; // Maximum daily contribution per user
@@ -357,6 +362,9 @@ contract Pool is AccessControl {
         if (dailyPool < MIN_POOL_BALANCE) revert PoolBalanceBelowMinimum();
         if (distributionInProgress) revert DistributionInProgress();
 
+        // Attempt to retry failed transfers before starting new distribution
+        _autoRetryDuringDistribution();
+
         // Initialize distribution state
         distributionInProgress = true;
         distributionIndex = 0;
@@ -511,6 +519,107 @@ contract Pool is AccessControl {
         
         // Start first batch
         _processBatch();
+    }
+
+    /**
+     * @dev Automatically retry failed transfers
+     * @notice Public function that anyone can call to help process failed transfers
+     * @dev Processes up to MAX_AUTO_RETRIES_PER_TX failed transfers per call
+     */
+    function autoRetryFailedTransfers() external {
+        uint256 processedCount = 0;
+        uint256 successCount = 0;
+        
+        // Process failed transfers with circuit breaker
+        for (uint256 i = 0; i < failedReceivers.length && processedCount < MAX_AUTO_RETRIES_PER_TX; i++) {
+            address receiver = failedReceivers[i];
+            FailedTransfer storage failed = failedTransfers[receiver];
+            
+            // Skip if no failed transfer or max retries exceeded
+            if (failed.amount == 0 || failed.retryCount >= MAX_RETRIES) {
+                continue;
+            }
+            
+            // Check if retry cooldown has passed
+            uint256 cooldown = RETRY_COOLDOWN * (1 << failed.retryCount);
+            if (block.timestamp < failed.timestamp + cooldown) {
+                continue;
+            }
+            
+            // Attempt retry
+            if (_attemptTransferRetry(receiver)) {
+                successCount++;
+            }
+            processedCount++;
+        }
+        
+        // Update last auto-retry time
+        lastAutoRetryTime = block.timestamp;
+        
+        emit AutoRetryCompleted(processedCount, successCount);
+    }
+
+    /**
+     * @dev Internal function to attempt a single transfer retry
+     * @param receiver Address to retry transfer to
+     * @return success Whether the retry was successful
+     */
+    function _attemptTransferRetry(address receiver) internal returns (bool success) {
+        FailedTransfer storage failed = failedTransfers[receiver];
+        uint256 amount = failed.amount;
+        
+        // Remove from failed transfers before attempting
+        delete failedTransfers[receiver];
+        _removeFailedReceiver(receiver);
+        
+        try this.transferToReceiver{ gas: 21000 }(receiver, amount) {
+            emit TransferRetried(receiver, amount, true);
+            emit KindnessReceived(receiver, amount);
+            unchecked {
+                unclaimedFunds -= amount;
+            }
+            return true;
+        } catch {
+            // Re-add to failed transfers with incremented retry count
+            failedTransfers[receiver] = FailedTransfer({
+                receiver: receiver,
+                amount: amount,
+                timestamp: block.timestamp,
+                retryCount: failed.retryCount + 1
+            });
+            _addFailedReceiver(receiver);
+            emit TransferRetried(receiver, amount, false);
+            return false;
+        }
+    }
+
+    /**
+     * @dev Automatically retry failed transfers during distribution
+     * @notice Called internally during distribution to piggyback retries
+     */
+    function _autoRetryDuringDistribution() internal {
+        uint256 processedCount = 0;
+        
+        // Limit retries during distribution to avoid gas issues
+        uint256 maxRetries = MAX_AUTO_RETRIES_PER_TX / 2; // Conservative limit
+        
+        for (uint256 i = 0; i < failedReceivers.length && processedCount < maxRetries; i++) {
+            address receiver = failedReceivers[i];
+            FailedTransfer storage failed = failedTransfers[receiver];
+            
+            if (failed.amount == 0 || failed.retryCount >= MAX_RETRIES) {
+                continue;
+            }
+            
+            // Use shorter cooldown during distribution for faster recovery
+            uint256 cooldown = RETRY_COOLDOWN * (1 << failed.retryCount) / 2;
+            if (block.timestamp < failed.timestamp + cooldown) {
+                continue;
+            }
+            
+            _attemptTransferRetry(receiver);
+            processedCount++;
+        }
     }
 
     /**
