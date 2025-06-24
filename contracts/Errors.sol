@@ -37,3 +37,6 @@ error InsufficientContribution();
 error DailyWithdrawalLimitExceeded();
 error WithdrawalCooldownActive();
 error WithdrawalAmountTooLow();
+error DistributionInProgress();
+error NoDistributionInProgress();
+error DistributionAlreadyComplete();

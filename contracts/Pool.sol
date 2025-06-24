@@ -26,6 +26,12 @@ contract Pool is AccessControl {
     mapping(address => uint256) public dailyContributions; // Track daily contributions per user
     uint256 public unclaimedFunds; // Track unclaimed funds
     bool public distributionWindowOpen; // Track if distribution window is open
+    
+    // Batch distribution state
+    uint256 public distributionIndex; // Current index in receivers array for batch processing
+    bool public distributionInProgress; // Track if distribution is currently in progress
+    uint256 public distributionStartTime; // When current distribution started
+    address[] public distributionSnapshot; // Snapshot of receivers at distribution start
 
     // Daily reset mechanism
     uint256 public currentDay; // Current day counter (increments every 24 hours)
@@ -66,6 +72,8 @@ contract Pool is AccessControl {
     event EmergencyExitCompleted(address indexed user);
     event ContributionWithdrawn(address indexed user, uint256 amount);
     event WithdrawalFailed(address indexed user, uint256 amount);
+    event BatchDistributed(uint256 batchSize, uint256 processedCount, uint256 totalReceivers);
+    event DistributionStopped(uint256 timestamp);
 
     // Constants
     uint256 public constant DISTRIBUTION_INTERVAL = 1 days;
@@ -76,6 +84,7 @@ contract Pool is AccessControl {
     uint256 public constant MIN_POOL_BALANCE = 0.01 ether; // Minimum pool balance required to distribute
     uint256 public constant MAX_RETRIES = 3;
     uint256 public constant RETRY_COOLDOWN = 1 hours;
+    uint256 public constant DISTRIBUTION_BATCH_SIZE = 25; // Maximum receivers per distribution batch
 
     // Daily limits
     uint256 public constant MAX_DAILY_CONTRIBUTION = 5 ether; // Maximum daily contribution per user
@@ -335,11 +344,10 @@ contract Pool is AccessControl {
     }
 
     /**
-     * @dev Distributes the pool to all receivers
-     * @dev Can only be called by distributor during distribution window
-     * @dev Uses transfer() for EOA addresses
+     * @dev Start batch distribution process
+     * @notice Initiates distribution in batches to prevent gas limit issues
      */
-    function distributePool() external onlyRole(DISTRIBUTOR_ROLE) {
+    function startDistribution() external onlyRole(DISTRIBUTOR_ROLE) {
         if (!isWithinDistributionWindow()) revert NotInDistributionWindow();
         if (hasDistributedToday()) revert AlreadyDistributedToday();
         if (dailyPool == 0) revert EmptyPool();
@@ -347,25 +355,54 @@ contract Pool is AccessControl {
         if (receivers.length > MAX_RECEIVERS) revert TooManyReceivers();
         if (address(this).balance < dailyPool) revert InsufficientContractBalance();
         if (dailyPool < MIN_POOL_BALANCE) revert PoolBalanceBelowMinimum();
+        if (distributionInProgress) revert DistributionInProgress();
 
-        // Store values we need before making any state changes
-        uint256 amountPerReceiver = dailyPool / receivers.length;
-        uint256 totalAmount = dailyPool;
-        uint256 receiverCount = receivers.length;
-        uint256 failedAmount;
-
-        // Store receivers array in memory to avoid storage reads
-        address[] memory currentReceivers = receivers;
-
-        // EFFECTS: Update all state variables before any external calls
-        dailyPool = 0;
-        // Update state before external calls to prevent reentrancy
-        lastDistributionTime = block.timestamp;
+        // Initialize distribution state
+        distributionInProgress = true;
+        distributionIndex = 0;
+        distributionStartTime = block.timestamp;
+        
+        // Create snapshot of current receivers
+        delete distributionSnapshot;
+        for (uint256 i = 0; i < receivers.length; i++) {
+            distributionSnapshot.push(receivers[i]);
+        }
+        
+        // Clear receivers array (new users can't join during distribution)
         delete receivers;
+        
+        // Start first batch
+        _processBatch();
+    }
 
-        // Distribute to each receiver
-        for (uint256 i = 0; i < currentReceivers.length; i++) {
-            address receiver = currentReceivers[i];
+    /**
+     * @dev Continue batch distribution process
+     * @notice Processes the next batch of receivers
+     */
+    function continueDistribution() external onlyRole(DISTRIBUTOR_ROLE) {
+        if (!distributionInProgress) revert NoDistributionInProgress();
+        if (distributionIndex >= distributionSnapshot.length) revert DistributionAlreadyComplete();
+        
+        _processBatch();
+    }
+
+    /**
+     * @dev Process a batch of receivers
+     * @notice Internal function to handle distribution logic
+     */
+    function _processBatch() internal {
+        uint256 startIndex = distributionIndex;
+        uint256 endIndex = startIndex + DISTRIBUTION_BATCH_SIZE;
+        if (endIndex > distributionSnapshot.length) {
+            endIndex = distributionSnapshot.length;
+        }
+
+        uint256 amountPerReceiver = dailyPool / distributionSnapshot.length;
+        uint256 failedAmount = 0;
+
+        // Process batch of receivers
+        for (uint256 i = startIndex; i < endIndex; i++) {
+            address receiver = distributionSnapshot[i];
 
             // Reset all daily data for the receiver
             dailyContributions[receiver] = 0;
@@ -377,13 +414,13 @@ contract Pool is AccessControl {
             userRegistry.updateReceiverPoolStatus(receiver, false);
             userRegistry.updateUserStats(receiver, false, amountPerReceiver);
 
-            // Make external call
+            // Make external call with gas limit
             try this.transferToReceiver{ gas: 21000 }(receiver, amountPerReceiver) {
-                emit PoolDistributed(amountPerReceiver, 1);
+                emit KindnessReceived(receiver, amountPerReceiver);
             } catch {
                 // Track failed transfer
                 failedTransfers[receiver] = FailedTransfer({
-                    receiver: receiver, // Store the receiver address
+                    receiver: receiver,
                     amount: amountPerReceiver,
                     timestamp: block.timestamp,
                     retryCount: 0
@@ -392,12 +429,12 @@ contract Pool is AccessControl {
                 failedAmount += amountPerReceiver;
                 emit TransferFailed(receiver, amountPerReceiver);
             }
-            unchecked {
-                i++;
-            }
         }
 
-        // Update unclaimed funds
+        // Update distribution progress
+        distributionIndex = endIndex;
+
+        // Update unclaimed funds if there were failures
         if (failedAmount > 0) {
             unchecked {
                 unclaimedFunds += failedAmount;
@@ -405,7 +442,75 @@ contract Pool is AccessControl {
             emit UnclaimedFundsUpdated(unclaimedFunds);
         }
 
-        emit PoolDistributed(totalAmount - failedAmount, receiverCount);
+        // Check if distribution is complete
+        if (distributionIndex >= distributionSnapshot.length) {
+            _finalizeDistribution();
+        }
+
+        emit BatchDistributed(endIndex - startIndex, distributionIndex, distributionSnapshot.length);
+    }
+
+    /**
+     * @dev Finalize the distribution process
+     * @notice Complete distribution and reset state
+     */
+    function _finalizeDistribution() internal {
+        // Update state
+        lastDistributionTime = block.timestamp;
+        dailyPool = 0;
+        distributionInProgress = false;
+        distributionIndex = 0;
+        
+        // Clear snapshot
+        delete distributionSnapshot;
+        
+        emit PoolDistributed(address(this).balance, distributionSnapshot.length);
+    }
+
+    /**
+     * @dev Emergency stop for distribution
+     * @notice Allow admin to stop distribution in case of issues
+     */
+    function emergencyStopDistribution() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (!distributionInProgress) revert NoDistributionInProgress();
+        
+        distributionInProgress = false;
+        distributionIndex = 0;
+        delete distributionSnapshot;
+        
+        emit DistributionStopped(block.timestamp);
+    }
+
+    /**
+     * @dev Legacy function for backward compatibility
+     * @notice Use startDistribution() for new implementations  
+     */
+    function distributePool() external onlyRole(DISTRIBUTOR_ROLE) {
+        if (!isWithinDistributionWindow()) revert NotInDistributionWindow();
+        if (hasDistributedToday()) revert AlreadyDistributedToday();
+        if (dailyPool == 0) revert EmptyPool();
+        if (receivers.length == 0) revert NoReceivers();
+        if (receivers.length > MAX_RECEIVERS) revert TooManyReceivers();
+        if (address(this).balance < dailyPool) revert InsufficientContractBalance();
+        if (dailyPool < MIN_POOL_BALANCE) revert PoolBalanceBelowMinimum();
+        if (distributionInProgress) revert DistributionInProgress();
+
+        // Initialize distribution state
+        distributionInProgress = true;
+        distributionIndex = 0;
+        distributionStartTime = block.timestamp;
+        
+        // Create snapshot of current receivers
+        delete distributionSnapshot;
+        for (uint256 i = 0; i < receivers.length; i++) {
+            distributionSnapshot.push(receivers[i]);
+        }
+        
+        // Clear receivers array (new users can't join during distribution)
+        delete receivers;
+        
+        // Start first batch
+        _processBatch();
     }
 
     /**
