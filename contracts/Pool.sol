@@ -26,13 +26,13 @@ contract Pool is AccessControl {
     mapping(address => uint256) public dailyContributions; // Track daily contributions per user
     uint256 public unclaimedFunds; // Track unclaimed funds
     bool public distributionWindowOpen; // Track if distribution window is open
-    
+
     // Batch distribution state
     uint256 public distributionIndex; // Current index in receivers array for batch processing
     bool public distributionInProgress; // Track if distribution is currently in progress
     uint256 public distributionStartTime; // When current distribution started
     address[] public distributionSnapshot; // Snapshot of receivers at distribution start
-    
+
     // Auto-retry state
     uint256 public lastAutoRetryTime; // Last time auto-retry was attempted
 
@@ -290,12 +290,7 @@ contract Pool is AccessControl {
      * @dev Allows users to withdraw their contribution from the current day's pool
      * @param amount Amount to withdraw (must be <= user's daily contribution)
      */
-    function withdrawContribution(uint256 amount)
-        external
-        dailyReset
-        withdrawalCooldown
-        transactionLimited
-    {
+    function withdrawContribution(uint256 amount) external dailyReset withdrawalCooldown transactionLimited {
         if (amount < MIN_WITHDRAWAL_AMOUNT) revert WithdrawalAmountTooLow();
 
         // Check if user has sufficient contribution to withdraw
@@ -318,7 +313,7 @@ contract Pool is AccessControl {
         }
 
         // Attempt withdrawal
-        (bool success, ) = payable(msg.sender).call{value: amount}("");
+        (bool success, ) = payable(msg.sender).call{ value: amount }("");
         if (!success) {
             // Revert state changes if withdrawal failed
             unchecked {
@@ -369,16 +364,16 @@ contract Pool is AccessControl {
         distributionInProgress = true;
         distributionIndex = 0;
         distributionStartTime = block.timestamp;
-        
+
         // Create snapshot of current receivers
         delete distributionSnapshot;
         for (uint256 i = 0; i < receivers.length; i++) {
             distributionSnapshot.push(receivers[i]);
         }
-        
+
         // Clear receivers array (new users can't join during distribution)
         delete receivers;
-        
+
         // Start first batch
         _processBatch();
     }
@@ -390,7 +385,7 @@ contract Pool is AccessControl {
     function continueDistribution() external onlyRole(DISTRIBUTOR_ROLE) {
         if (!distributionInProgress) revert NoDistributionInProgress();
         if (distributionIndex >= distributionSnapshot.length) revert DistributionAlreadyComplete();
-        
+
         _processBatch();
     }
 
@@ -468,10 +463,10 @@ contract Pool is AccessControl {
         dailyPool = 0;
         distributionInProgress = false;
         distributionIndex = 0;
-        
+
         // Clear snapshot
         delete distributionSnapshot;
-        
+
         emit PoolDistributed(address(this).balance, distributionSnapshot.length);
     }
 
@@ -481,17 +476,17 @@ contract Pool is AccessControl {
      */
     function emergencyStopDistribution() external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (!distributionInProgress) revert NoDistributionInProgress();
-        
+
         distributionInProgress = false;
         distributionIndex = 0;
         delete distributionSnapshot;
-        
+
         emit DistributionStopped(block.timestamp);
     }
 
     /**
      * @dev Legacy function for backward compatibility
-     * @notice Use startDistribution() for new implementations  
+     * @notice Use startDistribution() for new implementations
      */
     function distributePool() external onlyRole(DISTRIBUTOR_ROLE) {
         if (!isWithinDistributionWindow()) revert NotInDistributionWindow();
@@ -507,16 +502,16 @@ contract Pool is AccessControl {
         distributionInProgress = true;
         distributionIndex = 0;
         distributionStartTime = block.timestamp;
-        
+
         // Create snapshot of current receivers
         delete distributionSnapshot;
         for (uint256 i = 0; i < receivers.length; i++) {
             distributionSnapshot.push(receivers[i]);
         }
-        
+
         // Clear receivers array (new users can't join during distribution)
         delete receivers;
-        
+
         // Start first batch
         _processBatch();
     }
@@ -529,33 +524,33 @@ contract Pool is AccessControl {
     function autoRetryFailedTransfers() external {
         uint256 processedCount = 0;
         uint256 successCount = 0;
-        
+
         // Process failed transfers with circuit breaker
         for (uint256 i = 0; i < failedReceivers.length && processedCount < MAX_AUTO_RETRIES_PER_TX; i++) {
             address receiver = failedReceivers[i];
             FailedTransfer storage failed = failedTransfers[receiver];
-            
+
             // Skip if no failed transfer or max retries exceeded
             if (failed.amount == 0 || failed.retryCount >= MAX_RETRIES) {
                 continue;
             }
-            
+
             // Check if retry cooldown has passed
             uint256 cooldown = RETRY_COOLDOWN * (1 << failed.retryCount);
             if (block.timestamp < failed.timestamp + cooldown) {
                 continue;
             }
-            
+
             // Attempt retry
             if (_attemptTransferRetry(receiver)) {
                 successCount++;
             }
             processedCount++;
         }
-        
+
         // Update last auto-retry time
         lastAutoRetryTime = block.timestamp;
-        
+
         emit AutoRetryCompleted(processedCount, successCount);
     }
 
@@ -567,11 +562,11 @@ contract Pool is AccessControl {
     function _attemptTransferRetry(address receiver) internal returns (bool success) {
         FailedTransfer storage failed = failedTransfers[receiver];
         uint256 amount = failed.amount;
-        
+
         // Remove from failed transfers before attempting
         delete failedTransfers[receiver];
         _removeFailedReceiver(receiver);
-        
+
         try this.transferToReceiver{ gas: 21000 }(receiver, amount) {
             emit TransferRetried(receiver, amount, true);
             emit KindnessReceived(receiver, amount);
@@ -599,24 +594,24 @@ contract Pool is AccessControl {
      */
     function _autoRetryDuringDistribution() internal {
         uint256 processedCount = 0;
-        
+
         // Limit retries during distribution to avoid gas issues
         uint256 maxRetries = MAX_AUTO_RETRIES_PER_TX / 2; // Conservative limit
-        
+
         for (uint256 i = 0; i < failedReceivers.length && processedCount < maxRetries; i++) {
             address receiver = failedReceivers[i];
             FailedTransfer storage failed = failedTransfers[receiver];
-            
+
             if (failed.amount == 0 || failed.retryCount >= MAX_RETRIES) {
                 continue;
             }
-            
+
             // Use shorter cooldown during distribution for faster recovery
-            uint256 cooldown = RETRY_COOLDOWN * (1 << failed.retryCount) / 2;
+            uint256 cooldown = (RETRY_COOLDOWN * (1 << failed.retryCount)) / 2;
             if (block.timestamp < failed.timestamp + cooldown) {
                 continue;
             }
-            
+
             _attemptTransferRetry(receiver);
             processedCount++;
         }
@@ -894,15 +889,12 @@ contract Pool is AccessControl {
      * @return nextWithdrawalTime Timestamp when user can withdraw again
      * @return withdrawableAmount Amount user can withdraw
      */
-    function getUserWithdrawalStats(address user)
+    function getUserWithdrawalStats(
+        address user
+    )
         external
         view
-        returns (
-            uint256 withdrawalCount,
-            bool canWithdraw,
-            uint256 nextWithdrawalTime,
-            uint256 withdrawableAmount
-        )
+        returns (uint256 withdrawalCount, bool canWithdraw, uint256 nextWithdrawalTime, uint256 withdrawableAmount)
     {
         uint256 today = block.timestamp / 1 days;
 
@@ -931,11 +923,7 @@ contract Pool is AccessControl {
     function getWithdrawalLimits()
         external
         pure
-        returns (
-            uint256 maxDailyWithdrawals,
-            uint256 withdrawalCooldownPeriod,
-            uint256 minWithdrawalAmount
-        )
+        returns (uint256 maxDailyWithdrawals, uint256 withdrawalCooldownPeriod, uint256 minWithdrawalAmount)
     {
         return (MAX_DAILY_WITHDRAWALS, WITHDRAWAL_COOLDOWN, MIN_WITHDRAWAL_AMOUNT);
     }
